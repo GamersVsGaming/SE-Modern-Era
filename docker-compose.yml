@@ -1,0 +1,40 @@
+version: '3.3'
+
+networks:
+    wordpress:
+
+services:
+    mysql:
+        image: mysql:latest
+        container_name: mysql_se
+        restart: unless-stopped
+        tty: true
+        command: --default-authentication-plugin=mysql_native_password
+        environment:
+            - MYSQL_DATABASE=${DB_DATABASE}
+            - MYSQL_USER=${DB_USERNAME}
+            - MYSQL_PASSWORD=${DB_PASSWORD}
+            - MYSQL_ROOT_PASSWORD=${DB_ROOT_PASSWORD}
+        ports:
+            - "3306:3306"
+        networks:
+            - wordpress
+        volumes:
+            - "./src/__dev/:/src/__dev/"
+    wordpress:
+        build: .
+        container_name: wordpress_se
+        depends_on:
+            - mysql
+        environment:
+            - DB_HOST=${DB_HOST}
+            - DB_PORT=${DB_PORT}
+            - DB_DATABASE=${DB_DATABASE}
+            - DB_USERNAME=${DB_USERNAME}
+            - DB_PASSWORD=${DB_PASSWORD}
+        volumes:
+            - "./src:/var/www/html"
+        ports:
+            - "80:80"
+        networks:
+            - wordpress

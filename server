@@ -1,0 +1,244 @@
+#!/bin/bash
+PATH=./node_modules/.bin:$PATH
+
+source .env
+
+# check if stdout is a terminal...
+if test -t 1; then
+
+    # see if it supports colors...
+    ncolors=$(tput colors)
+
+    if test -n "$ncolors" && test $ncolors -ge 8; then
+        bold="$(tput bold)"
+        underline="$(tput smul)"
+        standout="$(tput smso)"
+        normal="$(tput sgr0)"
+        black="$(tput setaf 0)"
+        red="$(tput setaf 1)"
+        green="$(tput setaf 2)"
+        yellow="$(tput setaf 3)"
+        blue="$(tput setaf 4)"
+        magenta="$(tput setaf 5)"
+        cyan="$(tput setaf 6)"
+        white="$(tput setaf 7)"
+    fi
+fi
+
+echo -e "${yellow}Server Manager provided by ${bold}[D]uffion${normal}"
+echo -e "${yellow}Developed by ${blue}${bold}Terry Valladon <duffion@terryvalladon.com>${normal}"
+
+function debug() {
+  echo "Stopped in REPL. Press ^D to resume, or ^C to abort."
+  local line
+  while read -r -p "> " line; do
+    eval "$line"
+  done
+  echo
+}
+
+function setup { ## Setup the required directories and display instructions for setup
+  mkdir mysql
+  echo -e "${yellow}1.Modify the .env file and set the following values to something secure: ${cyan}DB_DATABASE${normal}, ${cyan}DB_USERNAME${normal}, ${cyan}DB_PASSWORD ${normal}and ${cyan}DB_ROOT_PASSWORD${normal}"
+  echo -e "${yellow}2.Run the ${cyan}./server first_run ${yellow}command and follow directions${normal}"
+}
+
+function first_run { ## Start the containers and display information needed for Wordpress Setup page
+  ./$0 up -d
+  echo -e "${yellow}Run the ${cyan}./server update_start${yellow} command${normal}"
+  echo -e "${yellow}Open browser to http://localhost${normal}"
+  echo -e "${yellow}Insert the following values in the wordpress setup configuration page:${normal}"
+  echo -e "${yellow}Database Name: ${cyan}$DB_DATABASE${normal}"
+  echo -e "${yellow}Username: ${cyan}$DB_USERNAME${normal}"
+  echo -e "${yellow}Password: ${cyan}$DB_PASSWORD${normal}"
+  echo -e "${yellow}Database Host: ${cyan}$DB_HOST${normal}"
+  echo -e "${yellow}Table Prefix: ${cyan}Leave alone or change as needed for project${normal}"
+  echo -e "${yellow}Follow instructions on webpage to create wp-config.php file${normal}"
+  echo -e "${yellow}Do initial setup of system, update, permalink setup, etc.${normal}"
+  echo -e "${yellow}Run the ${cyan}./server update_end${yellow} command${normal}"
+}
+
+function up { ## Launch the infrastructure
+  docker-compose up -d
+}
+
+function down { ## Tear down the infrastructure leaving images
+    echo -e "${yellow}Creating backup of database.${normal}"
+    export
+    docker-compose down
+}
+
+function purge { ## Tear down the infrastructure removing images and volumes and orphans
+    docker-compose down --rmi all -v --remove-orphans
+}
+
+function start { ## Start all containers or a single container by name
+    docker-compose start $*
+}
+
+function stop { ## Stop all containers or a single container by name
+    docker-compose stop $*
+}
+
+function restart { ## Restart all containers or a single container by name
+  docker-compose stop $* &&
+  docker-compose start $*
+}
+
+function rebuild { ## Rebuild all containers or a single container by name
+  docker-compose stop $* &&
+  docker-compose build $* &&
+  docker-compose start $*
+}
+
+function shell { ## Launch shell into container by name
+  docker-compose exec $* bash
+}
+
+function release { ## Build the release docker image for pushing as latest to docker hub
+  docker build -f Dockerfile_Release -t duffion/docker_hub_name:latest .
+}
+
+function export { ## Export the current mysql database to src/__dev folder
+  docker-compose exec mysql bash -c 'export MYSQL_PWD='$DB_ROOT_PASSWORD';/usr/bin/mysqldump -u root '$DB_DATABASE > src/__dev/"$DB_DATABASE"_"$(date +"%Y_%m_%d_%I_%M_%p").sql"
+}
+
+function import { ## Import a sql file from src/__dev folder into the mysql database. Must provide filename on end of command. Modified by Jordan L to drop the existing DB before importing.
+  docker-compose exec mysql bash -c 'echo "[client]" > my.cnf && echo "password = \"'$DB_ROOT_PASSWORD'\"" >> my.cnf && echo "user = \"root\"" >> my.cnf'
+  docker-compose exec mysql bash -c 'export DB='$DB_DATABASE'; echo "DROP DATABASE $DB;" | mysql --defaults-extra-file=./my.cnf'
+  docker-compose exec mysql bash -c 'export DB='$DB_DATABASE'; echo "CREATE DATABASE $DB;" | mysql --defaults-extra-file=./my.cnf'
+  docker-compose exec mysql bash -c 'rm my.cnf'
+  docker-compose exec mysql bash -c 'export MYSQL_PWD='$DB_ROOT_PASSWORD';/usr/bin/mysql -u root '$DB_DATABASE' < '$1
+}
+
+function dev { ## Simple dev enviroment. This will run Up and then Import on provided file name. Usage: ./server dev <mysql backup file in src/__dev directory>
+  up
+  echo "Waiting for database to come up"
+  sleep 60
+  import $1
+}
+
+function update_start { ## Set ownership of files in wordpress container to www-data so the system can update
+  docker-compose exec wordpress bash -c 'chown -R www-data: /var/www/html/{wp-content,wp-admin,wp-includes,*.php,*.txt,*.html}'
+  docker-compose exec wordpress bash -c 'chown www-data: /var/www/html'
+}
+
+function fixperms { ## Reset ownership of files in wordpress to the current shell user
+  sudo chown -R $USER src
+}
+
+function wp_update { ## Updates WP to the latest version
+ docker-compose exec wordpress bash -c 'curl -o /var/www/html/wordpress.tar.gz "https://wordpress.org/latest.tar.gz"'
+ docker-compose exec wordpress bash -c 'mkdir /var/www/html/wordpress'
+ docker-compose exec wordpress bash -c 'tar -xvzf /var/www/html/wordpress.tar.gz -C /var/www/html'
+ docker-compose exec wordpress bash -c 'rm -r /var/www/html/wordpress/wp-content'
+ docker-compose exec wordpress bash -c 'cp -r /var/www/html/wordpress/. /var/www/html'
+ docker-compose exec wordpress bash -c 'rm -r /var/www/html/wordpress'
+ docker-compose exec wordpress bash -c 'rm /var/www/html/wordpress.tar.gz'
+ docker-compose exec wordpress bash -c 'chown -R www-data: /var/www/html'
+ docker-compose exec wordpress bash -c 'find /var/www/html -type d -exec chmod 775 {} \;'
+ docker-compose exec wordpress bash -c 'find /var/www/html -type f -exec chmod 664 {} \;'
+}
+
+function npminst { ## Installs node_modules into your child theme's working directory
+ which npm >> .npmdir
+ npmdir=$(<.npmdir)
+ echo "${cyan}"
+ ls -la ./src/wp-content/themes
+ echo "${green}See above for your current theme dir."
+ read -p "Enter the name of the theme dir located in wp-content/themes (i.e. aavd-duffion):${normal} " theme
+ ${npmdir} --prefix ./src/wp-content/themes/${theme} install
+ rm .npmdir
+}
+
+function gulpw { ## Uses local gulp bins in the node_modules folder instead of global bins to run 'gulp watch'
+ echo "${cyan}"
+ ls -la ./src/wp-content/themes
+ echo "${green}See above for your current theme dir."
+ read -p "Enter the name of the theme dir located in wp-content/themes (i.e. aavd-duffion):${normal} " theme
+ ./src/wp-content/themes/${theme}/node_modules/.bin/gulp --cwd ./src/wp-content/themes/${theme} watch
+}
+
+function localmod { ## Changes URLs in the DB for posts, postmeta, home, and siteurl to localhost
+  echo -e "${cyan}This function changes all staging/prod URLS (home, site, permalinks, etc.) to use localhost instead of the prod URL."
+  read -p "Enter the current staging or prod URL, shortened (i.e. duffion.com or staging.duffion.com): ${normal}" domain
+  echo "UPDATE wp_options SET option_value = replace(option_value, 'https://"$domain"', 'http://localhost/') WHERE option_name = 'home' OR option_name = 'siteurl';" > src/__dev/localmod
+  echo "UPDATE wp_posts SET post_content = replace(post_content, 'https://"$domain"', 'http://localhost');" >> src/__dev/localmod
+  echo "UPDATE wp_postmeta SET meta_value = replace(meta_value, 'https://"$domain"', 'http://localhost');" >> src/__dev/localmod
+  echo "UPDATE wp_options SET option_value = replace(option_value, 'https://"$domain"', 'http://localhost') WHERE option_name = 'upload_path';" >> src/__dev/localmod
+  docker-compose exec mysql bash -c 'export MYSQL_PWD='$DB_ROOT_PASSWORD';/usr/bin/mysql -u root '$DB_DATABASE' < src/__dev/localmod'
+  rm src/__dev/localmod
+}
+
+function gexport { ## Export the current mysql database to src/__dev folder
+  docker-compose exec mysql bash -c 'export MYSQL_PWD='$DB_ROOT_PASSWORD';/usr/bin/mysqldump -u root '$DB_DATABASE | gzip > src/__dev/"$DB_DATABASE"_"$(date +"%Y_%m_%d_%I_%M_%p").sql.gz"
+}
+
+function gimport { ## Import a gzipped sql file from src/__dev folder into the mysql database. Must provide filename on end of command.
+  docker-compose exec mysql bash -c 'echo "[client]" > my.cnf && echo "password = \"'$DB_ROOT_PASSWORD'\"" >> my.cnf && echo "user = \"root\"" >> my.cnf'
+  docker-compose exec mysql bash -c 'export DB='$DB_DATABASE'; echo "DROP DATABASE $DB;" | mysql --defaults-extra-file=./my.cnf'
+  docker-compose exec mysql bash -c 'export DB='$DB_DATABASE'; echo "CREATE DATABASE $DB;" | mysql --defaults-extra-file=./my.cnf'
+  docker-compose exec mysql bash -c 'rm my.cnf'
+  docker-compose exec mysql bash -c 'export MYSQL_PWD='$DB_ROOT_PASSWORD';gunzip < '$1' | /usr/bin/mysql -u root '$DB_DATABASE
+}
+
+function timport { ## Import a tar.gz compressed sql file from src/__dev folder into the mysql database. Must provide filename on end of command.
+  docker-compose exec mysql bash -c 'echo "[client]" > my.cnf && echo "password = \"'$DB_ROOT_PASSWORD'\"" >> my.cnf && echo "user = \"root\"" >> my.cnf'
+  docker-compose exec mysql bash -c 'export DB='$DB_DATABASE'; echo "DROP DATABASE $DB;" | mysql --defaults-extra-file=./my.cnf'
+  docker-compose exec mysql bash -c 'export DB='$DB_DATABASE'; echo "CREATE DATABASE $DB;" | mysql --defaults-extra-file=./my.cnf'
+  docker-compose exec mysql bash -c 'rm my.cnf'
+  docker-compose exec mysql bash -c 'export MYSQL_PWD='$DB_ROOT_PASSWORD';tar -xOzf '$1' | /usr/bin/mysql -u root '$DB_DATABASE
+}
+
+function init { ## Pulls in a project form a specified remote, mirrors a specific branch, and fixes permissions
+  read -p "Enter the SSH URL for the project to be pulled in: " project
+  read -p "Enter the name of the branch to be mirrored: " branch
+  git -C ./src init
+  git -C ./src remote add origin $project
+  git -C ./src fetch
+  git -C ./src reset origin/$branch
+  git -C ./src reset --hard HEAD
+  fixperms
+  update_start
+}
+
+function env { ## Generates .env file based on user input and appends a unique slug to the end of container names
+  echo -e "This function writes to a .env file based on user input and sets unique container names for the project."
+  read -p "Enter local DB name: " localdb
+  read -p "Enter local MySQL username: " localusr
+  read -p "Enter MySQL local user pw: " localpw
+  read -p "Enter MySQL local root pw: " rootpw
+  read -p "Enter a unique slug to append to the containers (i.e. 'dlocal'): " slug
+  echo -e "DB_HOST=mysql" >> .env
+  echo -e "DB_PORT=3306" >> .env
+  echo -e "DB_DATABASE="$localdb >> .env
+  echo -e "DB_USERNAME="$localusr >> .env
+  echo -e "DB_PASSWORD="$localpw >> .env
+  echo -e "DB_ROOT_PASSWORD="$rootpw >> .env
+  sed -i "s/container_name:\ mysql/container_name:\ mysql_$slug/g" ./docker-compose.yml
+  sed -i "s/container_name:\ wordpress/container_name:\ wordpress_$slug/g" ./docker-compose.yml
+}
+
+function killall { ## Kills all docker containers currently running on your host
+  
+  docker ps -q > dock
+  dock=$(<./dock)
+  if [[ ${dock} ]]
+  then
+  docker kill ${dock}
+  else 
+  echo "${cyan}No containers are currently running${normal}"
+  fi
+  rm dock
+}
+
+function help { ## Display usage for this application
+  grep -E '^function [a-zA-Z_-]+ {.*?## .*$$' $0 | sed -e 's/function //' | sort | awk 'BEGIN {FS = "{.*?## "}; {printf "%-30s %s\n", $1, $2}'
+}
+
+function default {
+  help
+}
+
+TIMEFORMAT="Task completed in %3lR"
+time "${@:-default}"
